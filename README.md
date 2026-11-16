@@ -11,7 +11,6 @@
 
 ### Descripción
 
-Desarrollar un sistema funcional que permita registrar, monitorear y evaluar el desempeño de un portafolio compuesto por activos de renta fija y renta variable, proporcionando al usuario información clara y actualizada sobre su valor, rentabilidad y distribución de inversiones.
 
 ### Objetivos
 
