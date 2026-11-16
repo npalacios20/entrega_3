@@ -3,6 +3,13 @@
 # ***CNM InverGest*** 
 ## Indice
 
+➤ [Colaboradores del proyecto](#Colaboradores)
+➤ [Descripción del proyecto](#descripción)
+➤ [Objetivos del proyecto](#Objetivos)
+
+➤ [Funcionamiento del sistema](#Funcionamiento)
+➤ [Diagrama UML](#Diagrama)
+
 ### Colaboradores
 Este proyecto ha sido desarrollado por: 
 
