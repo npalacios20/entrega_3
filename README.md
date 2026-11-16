@@ -16,8 +16,6 @@
 
 <img width="2686" height="2652" alt="Diagrama UML" src="https://github.com/user-attachments/assets/886f4374-308b-4f76-af34-ed528bc4ffe5" />
 
-
-
 ### Colaboradores
 Este proyecto ha sido desarrollado por: 
 
