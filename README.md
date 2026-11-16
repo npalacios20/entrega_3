@@ -1,8 +1,7 @@
 ### Colaboradores
 Este proyecto ha sido desarrollado por: 
 
-❖ MARTIN MORALES MUÑOZ    
-❖ NILSON PALACIOS CARDENAS     
-❖ LEIDY CAROLINA DAVID VALLE
-
+❖ Leidy Carolina David Valle
+❖ Martin Morales Muñoz
+❖ Nilson Palacios Cardenas
 ## [⬆ Volver al Índice](#Indice)
