@@ -13,6 +13,8 @@
 
 El proyecto **CMN InverGest** consiste en el desarrollo de un sistema de información orientado al registro, monitoreo y evaluación del desempeño de un portafolio de inversiones conformado por instrumentos de renta fija y renta variable. Esta herramienta permite llevar un control detallado de las operaciones financieras realizadas, así como calcular de forma precisa la rentabilidad real de los activos, considerando no solo las ganancias, sino también los costos, comisiones y rendimientos asociados a cada instrumento.
 
+Desde una perspectiva técnica, el proyecto integra principios de programación orientada a objetos, manejo de estructuras de datos para el almacenamiento de información y lógica de cálculo financiero, permitiendo además actualizar la valoración de los activos según las variaciones del mercado en tiempo real, y generar reportes que facilitan la toma de decisiones de inversión.
+
 ### Objetivos
 
 1. Implementar un sistema que permita registrar y almacenar operaciones de compra y venta de acciones, CDT, bonos y TES (Bono del estado), con toda la información necesaria: fecha, cantidad, precio y comisiones de cada transacción.
