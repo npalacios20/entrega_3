@@ -14,6 +14,9 @@
 ### Funcionamiento
 ### Diagrama
 
+<img width="2686" height="2652" alt="image" src="https://github.com/user-attachments/assets/c291d02c-e54f-49a4-b3e6-2ce6206ce3b7" />
+
+
 ### Colaboradores
 Este proyecto ha sido desarrollado por: 
 
