@@ -9,6 +9,11 @@
 ➤ [Funcionamiento del sistema](#Funcionamiento)
 ➤ [Diagrama UML](#Diagrama)
 
+### Descripción
+### Objetivos
+### Funcionamiento
+### Diagrama
+
 ### Colaboradores
 Este proyecto ha sido desarrollado por: 
 
