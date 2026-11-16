@@ -11,6 +11,9 @@
 
 ### Descripción
 ### Objetivos
+
+1. Diseñar e implementar una estructura de clases que represente los distintos tipos de activos financieros y operaciones, aprovechando los principios de herencia y encapsulamiento de la programación orientada a objetos.
+
 ### Funcionamiento
 ### Diagrama
 
