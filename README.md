@@ -12,7 +12,7 @@
 ### Descripción
 ### Objetivos
 
-1. Diseñar e implementar una estructura de clases que represente los distintos tipos de activos financieros y operaciones, aprovechando los principios de herencia y encapsulamiento de la programación orientada a objetos.
+1. Implementar un sistema que permita registrar y almacenar operaciones de compra y venta de acciones, CDT, bonos y TES (Bono del estado), con toda la información necesaria: fecha, cantidad, precio y comisiones de cada transacción.
 
 ### Funcionamiento
 ### Diagrama
