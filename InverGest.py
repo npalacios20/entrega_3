@@ -1,160 +1,398 @@
+import tkinter as tk
+from tkinter import ttk, messagebox
 import yfinance as yf
 import pandas as pd
-import matplotlib.pyplot as plt
+from datetime import datetime
 
-plt.style.use('seaborn-v0_8-darkgrid')
 
-EMPRESAS = {
-    "Nike": {"ticker": "NKE", "tipo": "Renta Variable", "sector": "Indumentaria deportiva"},
-    "Coca-Cola": {"ticker": "KO", "tipo": "Renta Variable", "sector": "Bebidas y consumo"},
-    "Johnson & Johnson": {"ticker": "JNJ", "tipo": "Renta Variable", "sector": "Salud y farmacéutica"},
-    "PepsiCo": {"ticker": "PEP", "tipo": "Renta Variable", "sector": "Bebidas y alimentos"},
-    "Apple": {"ticker": "AAPL", "tipo": "Renta Variable", "sector": "Tecnología"},
-    "Microsoft": {"ticker": "MSFT", "tipo": "Renta Variable", "sector": "Software y nube"},
-    "Visa": {"ticker": "V", "tipo": "Renta Variable", "sector": "Servicios de pago"}
-}
-
-class DatosEmpresa:
-    def __init__(self, nombre, ticker, sector, tipo):
-        self.nombre = nombre
-        self.ticker = ticker
-        self.sector = sector
-        self.tipo = tipo
-        self.activo = yf.Ticker(ticker)
-        self.precio_actual = 0.0
-        self.dividendos_historicos = pd.Series(dtype='float64')
-        self.dividendo_ultimo = 0.0
-        self.rendimiento_anual = 0.0
-        self.dividendo_rendimiento = 0.0
-
-    def cargar_datos(self):
+class GestorDatos:
+    def __init__(self):
+        self.empresas = {}
+        self.historial_operaciones = []
+    
+    def agregar_empresa(self, nombre, ticker, sector):
         try:
-            print(f"Cargando datos de {self.nombre} ({self.ticker})...")
-            info = self.activo.info
-            self.nombre_completo = info.get('longName', self.nombre)
-            self.precio_actual = info.get('currentPrice', 0.0)
-            self.dividendo_rendimiento = info.get('dividendYield', 0.0) * 100
+            activo = yf.Ticker(ticker)
+            info = activo.info
+            precio_actual = info.get('currentPrice', 0.0)
+            rendimiento_div = info.get('dividendYield', 0.0) * 100
+            dividendo_ultimo = activo.dividends.iloc[-1] if not activo.dividends.empty else 0.0
+            historico = activo.history(period="1y")
+            rendimiento_anual = ((historico['Close'].iloc[-1] - historico['Close'].iloc[0]) / historico['Close'].iloc[0]) * 100 if not historico.empty else 0.0
             
-            datos_div = self.activo.dividends
-            if datos_div is not None and not datos_div.empty:
-                self.dividendos_historicos = datos_div
-                self.dividendo_ultimo = self.dividendos_historicos.iloc[-1]
-                print(f"Último dividendo: ${self.dividendo_ultimo:.4f} — Total histórico: {len(self.dividendos_historicos)} pagos")
-            else:
-                print("No hay historial de dividendos disponible")
-            
-            historico = self.activo.history(period="1y")
-            if historico is not None and not historico.empty:
-                precio_inicial = historico['Close'].iloc[0]
-                precio_final = historico['Close'].iloc[-1]
-                self.rendimiento_anual = ((precio_final - precio_inicial) / precio_inicial) * 100
-            return True
+            self.empresas[nombre] = {
+                "ticker": ticker,
+                "sector": sector,
+                "precio_actual": round(precio_actual, 2),
+                "dividendo_ultimo": round(dividendo_ultimo, 4),
+                "rendimiento_div": round(rendimiento_div, 2),
+                "rendimiento_anual": round(rendimiento_anual, 2),
+                "fecha_actualizacion": datetime.now().strftime("%d/%m/%Y %H:%M")
+            }
+            return True, f"{nombre} agregado correctamente"
         except Exception as e:
-            print(f"Error al cargar {self.nombre}: {e}")
-            return False
-
-    def resumen(self):
-        total_pagos = len(self.dividendos_historicos) if self.dividendos_historicos is not None and not self.dividendos_historicos.empty else 0
-        ultimo_div = round(self.dividendo_ultimo, 4) if self.dividendo_ultimo else 0.0
-        return {
-            "Nombre": self.nombre,
-            "Ticker": self.ticker,
-            "Sector": self.sector,
-            "Precio Actual ($)": round(self.precio_actual, 2),
-            "Último Dividendo ($)": ultimo_div,
-            "Rendimiento por Dividendo (%)": round(self.dividendo_rendimiento, 2),
-            "Rendimiento Anual (%)": round(self.rendimiento_anual, 2),
-            "Total Pagos de Dividendos": total_pagos
+            return False, f"Error: {str(e)}"
+    
+    def eliminar_empresa(self, nombre):
+        if nombre in self.empresas:
+            del self.empresas[nombre]
+            return True, f"{nombre} eliminado"
+        return False, "Empresa no encontrada"
+    
+    def actualizar_datos(self, nombre):
+        if nombre not in self.empresas:
+            return False, "Empresa no encontrada"
+        return self.agregar_empresa(nombre, self.empresas[nombre]["ticker"], self.empresas[nombre]["sector"])
+    
+    def registrar_operacion(self, tipo, nombre, cantidad, precio, comision):
+        valor_total = cantidad * precio + comision
+        self.historial_operaciones.append({
+            "fecha": datetime.now().strftime("%d/%m/%Y %H:%M"),
+            "tipo": tipo,
+            "empresa": nombre,
+            "cantidad": cantidad,
+            "precio_unitario": precio,
+            "comision": comision,
+            "valor_total": round(valor_total, 2)
+        })
+    
+    def obtener_portafolio(self):
+        return self.empresas
+    
+    def obtener_operaciones(self):
+        return self.historial_operaciones
+class TableroInverGest:
+    def __init__(self, root):
+        self.root = root
+        self.root.title("CMN InverGest — Tablero de Control")
+        self.root.geometry("1200x750")
+        self.root.configure(bg="#1a1a2e")
+        
+        self.gestor = GestorDatos()
+        self.inicializar_estilo()
+        self.crear_interfaz()
+        self.cargar_empresas_iniciales()
+    
+    def inicializar_estilo(self):
+        self.colores = {
+            "fondo": "#1a1a2e",
+            "panel": "#16213e",
+            "acento": "#00f5d4",
+            "positivo": "#4ade80",
+            "negativo": "#f87171",
+            "texto": "#eaeaea",
+            "boton": "#0f3460",
+            "entrada": "#0f3460"
         }
+        self.style = ttk.Style()
+        self.style.theme_use("clam")
+        self.style.configure("Treeview", background="#16213e", foreground="#eaeaea", 
+                            fieldbackground="#16213e", rowheight=30, font=("Segoe UI", 10))
+        self.style.configure("Treeview.Heading", background="#0f3460", foreground="#00f5d4",
+                            font=("Segoe UI", 10, "bold"))
+    
+    def crear_interfaz(self):
+        tk.Label(self.root, text="📊 CMN InverGest — Tablero de Control de Inversiones",
+                font=("Segoe UI", 18, "bold"), bg=self.colores["fondo"],
+                fg=self.colores["acento"]).pack(pady=15)
+        
+        marco_principal = tk.Frame(self.root, bg=self.colores["fondo"])
+        marco_principal.pack(fill=tk.BOTH, expand=True, padx=20)
+        
+        marco_izquierdo = tk.Frame(marco_principal, bg=self.colores["fondo"], width=350)
+        marco_izquierdo.pack(side=tk.LEFT, fill=tk.Y, padx=(0, 15))
+        
+        self.crear_seccion_agregar_empresa(marco_izquierdo)
+        self.crear_seccion_registrar_operacion(marco_izquierdo)
+        self.crear_seccion_acciones(marco_izquierdo)
+        
+        marco_derecho = tk.Frame(marco_principal, bg=self.colores["fondo"])
+        marco_derecho.pack(side=tk.RIGHT, fill=tk.BOTH, expand=True)
+        
+        self.crear_panel_resumen(marco_derecho)
+        self.crear_tabla_portafolio(marco_derecho)
+        self.crear_tabla_operaciones(marco_derecho)
+    
+    def crear_seccion_agregar_empresa(self, padre):
+        marco = tk.LabelFrame(padre, text="➕ Agregar Empresa", font=("Segoe UI", 11, "bold"),
+                             bg=self.colores["panel"], fg=self.colores["acento"], padx=10, pady=10)
+        marco.pack(fill=tk.X, pady=(0, 15))
+        
+        tk.Label(marco, text="Nombre:", bg=self.colores["panel"], fg=self.colores["texto"]).grid(row=0, column=0, sticky="w", pady=5)
+        self.entry_nombre = tk.Entry(marco, bg=self.colores["entrada"], fg="white", insertbackground="white")
+        self.entry_nombre.grid(row=0, column=1, pady=5)
+        
+        tk.Label(marco, text="Símbolo:", bg=self.colores["panel"], fg=self.colores["texto"]).grid(row=1, column=0, sticky="w", pady=5)
+        self.entry_ticker = tk.Entry(marco, bg=self.colores["entrada"], fg="white", insertbackground="white")
+        self.entry_ticker.grid(row=1, column=1, pady=5)
+        
+        tk.Label(marco, text="Sector:", bg=self.colores["panel"], fg=self.colores["texto"]).grid(row=2, column=0, sticky="w", pady=5)
+        self.entry_sector = tk.Entry(marco, bg=self.colores["entrada"], fg="white", insertbackground="white")
+        self.entry_sector.grid(row=2, column=1, pady=5)
+        
+        tk.Button(marco, text="Agregar", command=self.agregar_empresa, bg=self.colores["acento"],
+                fg="#000", font=("Segoe UI", 10, "bold"), relief=tk.FLAT, padx=10).grid(row=3, column=0, columnspan=2, pady=10)
+    
+    def crear_seccion_registrar_operacion(self, padre):
+        marco = tk.LabelFrame(padre, text="💱 Registrar Operación", font=("Segoe UI", 11, "bold"),
+                             bg=self.colores["panel"], fg=self.colores["acento"], padx=10, pady=10)
+        marco.pack(fill=tk.X, pady=(0, 15))
+        
+        self.var_tipo = tk.StringVar(value="Compra")
+        tk.Radiobutton(marco, text="Compra", variable=self.var_tipo, value="Compra",
+                      bg=self.colores["panel"], fg=self.colores["texto"], selectcolor=self.colores["entrada"],
+                      activebackground=self.colores["panel"], activeforeground=self.colores["texto"]).grid(row=0, column=0, pady=5)
+        tk.Radiobutton(marco, text="Venta", variable=self.var_tipo, value="Venta",
+                      bg=self.colores["panel"], fg=self.colores["texto"], selectcolor=self.colores["entrada"],
+                      activebackground=self.colores["panel"], activeforeground=self.colores["texto"]).grid(row=0, column=1, pady=5)
+        
+        tk.Label(marco, text="Empresa:", bg=self.colores["panel"], fg=self.colores["texto"]).grid(row=1, column=0, sticky="w", pady=5)
+        self.combo_empresa = ttk.Combobox(marco, state="readonly")
+        self.combo_empresa.grid(row=1, column=1, pady=5)
+        
+        tk.Label(marco, text="Cantidad:", bg=self.colores["panel"], fg=self.colores["texto"]).grid(row=2, column=0, sticky="w", pady=5)
+        self.entry_cantidad = tk.Entry(marco, bg=self.colores["entrada"], fg="white", insertbackground="white")
+        self.entry_cantidad.grid(row=2, column=1, pady=5)
+        
+        tk.Label(marco, text="Precio Unit.:", bg=self.colores["panel"], fg=self.colores["texto"]).grid(row=3, column=0, sticky="w", pady=5)
+        self.entry_precio = tk.Entry(marco, bg=self.colores["entrada"], fg="white", insertbackground="white")
+        self.entry_precio.grid(row=3, column=1, pady=5)
+        
+        tk.Label(marco, text="Comisión:", bg=self.colores["panel"], fg=self.colores["texto"]).grid(row=4, column=0, sticky="w", pady=5)
+        self.entry_comision = tk.Entry(marco, bg=self.colores["entrada"], fg="white", insertbackground="white")
+        self.entry_comision.grid(row=4, column=1, pady=5)
+        
+        tk.Button(marco, text="Registrar", command=self.registrar_operacion, bg=self.colores["acento"],
+                fg="#000", font=("Segoe UI", 10, "bold"), relief=tk.FLAT, padx=10).grid(row=5, column=0, columnspan=2, pady=10)
+    
+    def crear_seccion_acciones(self, padre):
+        marco = tk.LabelFrame(padre, text="🔄 Acciones", font=("Segoe UI", 11, "bold"),
+                             bg=self.colores["panel"], fg=self.colores["acento"], padx=10, pady=10)
+        marco.pack(fill=tk.X)
+        
+        tk.Button(marco, text="🔄 Actualizar Datos del Mercado", command=self.actualizar_todo,
+                bg="#3b82f6", fg="white", font=("Segoe UI", 10, "bold"), relief=tk.FLAT, padx=10).pack(fill=tk.X, pady=5)
+        tk.Button(marco, text="🗑️ Eliminar Seleccionado", command=self.eliminar_empresa,
+                bg="#ef4444", fg="white", font=("Segoe UI", 10, "bold"), relief=tk.FLAT, padx=10).pack(fill=tk.X, pady=5)
+        tk.Button(marco, text="📋 Exportar Reporte", command=self.exportar_reporte,
+                bg="#10b981", fg="white", font=("Segoe UI", 10, "bold"), relief=tk.FLAT, padx=10).pack(fill=tk.X, pady=5)
+    
+    def crear_panel_resumen(self, padre):
+        marco = tk.Frame(padre, bg=self.colores["panel"], padx=15, pady=15)
+        marco.pack(fill=tk.X, pady=(0, 15))
+        
+        self.lbl_total = tk.Label(marco, text="💰 Valor Total del Portafolio: $0.00",
+                                 font=("Segoe UI", 14, "bold"), bg=self.colores["panel"], fg=self.colores["acento"])
+        self.lbl_total.pack(side=tk.LEFT)
+        
+        self.lbl_empresas = tk.Label(marco, text="📈 Empresas: 0",
+                                    font=("Segoe UI", 12), bg=self.colores["panel"], fg=self.colores["texto"])
+        self.lbl_empresas.pack(side=tk.LEFT, padx=30)
+        
+        self.lbl_actualizacion = tk.Label(marco, text="Última actualización: --",
+                                         font=("Segoe UI", 10), bg=self.colores["panel"], fg="#9ca3af")
+        self.lbl_actualizacion.pack(side=tk.RIGHT)
+    
+    def crear_tabla_portafolio(self, padre):
+        tk.Label(padre, text="📊 Mi Portafolio", font=("Segoe UI", 12, "bold"),
+                bg=self.colores["fondo"], fg=self.colores["acento"]).pack(anchor="w", pady=(0, 8))
+        
+        columnas = ("nombre", "ticker", "sector", "precio", "dividendo", "rend_div", "rend_anual", "fecha")
+        self.tabla = ttk.Treeview(padre, columns=columnas, show="headings", height=8)
+        
+        encabezados = {
+            "nombre": "Empresa", "ticker": "Símbolo", "sector": "Sector",
+            "precio": "Precio ($)", "dividendo": "Últ. Div ($)",
+            "rend_div": "Rto Div (%)", "rend_anual": "Rto Anual (%)", "fecha": "Actualización"
+        }
+        for col, texto in encabezados.items():
+            self.tabla.heading(col, text=texto)
+            self.tabla.column(col, width=110, anchor="center")
+        
+        scrollbar = ttk.Scrollbar(padre, orient=tk.VERTICAL, command=self.tabla.yview)
+        self.tabla.configure(yscrollcommand=scrollbar.set)
+        
+        self.tabla.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+    
+    def crear_tabla_operaciones(self, padre):
+        tk.Label(padre, text="📝 Historial de Operaciones", font=("Segoe UI", 12, "bold"),
+                bg=self.colores["fondo"], fg=self.colores["acento"]).pack(anchor="w", pady=(15, 8))
+        
+        columnas_op = ("fecha", "tipo", "empresa", "cantidad", "precio", "comision", "total")
+        self.tabla_op = ttk.Treeview(padre, columns=columnas_op, show="headings", height=6)
+        
+        enc_op = {
+            "fecha": "Fecha", "tipo": "Tipo", "empresa": "Empresa",
+            "cantidad": "Cantidad", "precio": "P. Unit ($)", "comision": "Comisión ($)", "total": "Total ($)"
+        }
+        for col, texto in enc_op.items():
+            self.tabla_op.heading(col, text=texto)
+            self.tabla_op.column(col, width=110, anchor="center")
+        
+        scrollbar_op = ttk.Scrollbar(padre, orient=tk.VERTICAL, command=self.tabla_op.yview)
+        self.tabla_op.configure(yscrollcommand=scrollbar_op.set)
+        
+        self.tabla_op.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        scrollbar_op.pack(side=tk.RIGHT, fill=tk.Y)
+    def cargar_empresas_iniciales(self):
+        empresas_iniciales = [
+            ("Nike", "NKE", "Indumentaria deportiva"),
+            ("Coca-Cola", "KO", "Bebidas y consumo"),
+            ("Johnson & Johnson", "JNJ", "Salud y farmacéutica"),
+            ("PepsiCo", "PEP", "Bebidas y alimentos"),
+            ("Apple", "AAPL", "Tecnología"),
+            ("Microsoft", "MSFT", "Software y servicios en la nube"),
+            ("Visa", "V", "Servicios de pago")
+        ]
+        for nombre, ticker, sector in empresas_iniciales:
+            self.gestor.agregar_empresa(nombre, ticker, sector)
+        self.actualizar_tabla()
+        self.actualizar_combo_empresas()
+    
+    def agregar_empresa(self):
+        nombre = self.entry_nombre.get().strip()
+        ticker = self.entry_ticker.get().strip().upper()
+        sector = self.entry_sector.get().strip()
+        
+        if not nombre or not ticker:
+            messagebox.showwarning("Advertencia", "Completa los campos Nombre y Símbolo")
+            return
+        
+        exito, mensaje = self.gestor.agregar_empresa(nombre, ticker, sector)
+        if exito:
+            messagebox.showinfo("Éxito", mensaje)
+            self.entry_nombre.delete(0, tk.END)
+            self.entry_ticker.delete(0, tk.END)
+            self.entry_sector.delete(0, tk.END)
+            self.actualizar_tabla()
+            self.actualizar_combo_empresas()
+        else:
+            messagebox.showerror("Error", mensaje)
+    
+    def registrar_operacion(self):
+        tipo = self.var_tipo.get()
+        empresa = self.combo_empresa.get()
+        
+        if not empresa:
+            messagebox.showwarning("Advertencia", "Selecciona una empresa")
+            return
+        
+        try:
+            cantidad = float(self.entry_cantidad.get())
+            precio = float(self.entry_precio.get())
+            comision = float(self.entry_comision.get())
+        except ValueError:
+            messagebox.showerror("Error", "Ingresa valores numéricos válidos")
+            return
+        
+        self.gestor.registrar_operacion(tipo, empresa, cantidad, precio, comision)
+        messagebox.showinfo("Éxito", f"Operación de {tipo} registrada correctamente")
+        self.entry_cantidad.delete(0, tk.END)
+        self.entry_precio.delete(0, tk.END)
+        self.entry_comision.delete(0, tk.END)
+        self.actualizar_tabla_operaciones()
+    
+    def actualizar_tabla(self):
+        for fila in self.tabla.get_children():
+            self.tabla.delete(fila)
+        
+        datos = self.gestor.obtener_portafolio()
+        for nombre, info in datos.items():
+            self.tabla.insert("", tk.END, values=(
+                nombre,
+                info["ticker"],
+                info["sector"],
+                info["precio_actual"],
+                info["dividendo_ultimo"],
+                info["rendimiento_div"],
+                info["rendimiento_anual"],
+                info["fecha_actualizacion"]
+            ))
+        self.lbl_empresas.config(text=f"📈 Empresas: {len(datos)}")
+        self.lbl_actualizacion.config(text=f"Última actualización: {datetime.now().strftime('%d/%m/%Y %H:%M')}")
+    
+    def actualizar_tabla_operaciones(self):
+        for fila in self.tabla_op.get_children():
+            self.tabla_op.delete(fila)
+        
+        operaciones = self.gestor.obtener_operaciones()
+        for op in operaciones:
+            self.tabla_op.insert("", tk.END, values=(
+                op["fecha"],
+                op["tipo"],
+                op["empresa"],
+                op["cantidad"],
+                op["precio_unitario"],
+                op["comision"],
+                op["valor_total"]
+            ))
+    
+    def actualizar_combo_empresas(self):
+        nombres = list(self.gestor.obtener_portafolio().keys())
+        self.combo_empresa['values'] = nombres
+    
+    def actualizar_todo(self):
+        for nombre in list(self.gestor.obtener_portafolio().keys()):
+            self.gestor.actualizar_datos(nombre)
+        self.actualizar_tabla()
+        messagebox.showinfo("Éxito", "Todos los datos actualizados correctamente")
+    
+    def eliminar_empresa(self):
+        seleccion = self.tabla.selection()
+        if not seleccion:
+            messagebox.showwarning("Advertencia", "Selecciona una empresa de la tabla")
+            return
+        item = self.tabla.item(seleccion[0])
+        nombre = item['values'][0]
+        exito, mensaje = self.gestor.eliminar_empresa(nombre)
+        if exito:
+            messagebox.showinfo("Éxito", mensaje)
+            self.actualizar_tabla()
+            self.actualizar_combo_empresas()
+        else:
+            messagebox.showerror("Error", mensaje)
+    
+    def exportar_reporte(self):
+        datos = self.gestor.obtener_portafolio()
+        operaciones = self.gestor.obtener_operaciones()
+        
+        with open("reporte_portafolio.txt", "w", encoding="utf-8") as f:
+            f.write("=" * 50 + "\n")
+            f.write("REPORTE DEL PORTAFOLIO DE INVERSIONES\n")
+            f.write(f"Fecha de generación: {datetime.now().strftime('%d/%m/%Y %H:%M:%S')}\n")
+            f.write("=" * 50 + "\n\n")
+            
+            f.write("EMPRESAS EN EL PORTAFOLIO:\n\n")
+            for nombre, info in datos.items():
+                f.write(f"Empresa: {nombre}\n")
+                f.write(f"  Símbolo: {info['ticker']}\n")
+                f.write(f"  Sector: {info['sector']}\n")
+                f.write(f"  Precio actual: ${info['precio_actual']}\n")
+                f.write(f"  Último dividendo: ${info['dividendo_ultimo']}\n")
+                f.write(f"  Rendimiento por dividendo: {info['rendimiento_div']}%\n")
+                f.write(f"  Rendimiento anual: {info['rendimiento_anual']}%\n")
+                f.write(f"  Última actualización: {info['fecha_actualizacion']}\n")
+                f.write("-" * 40 + "\n")
+            
+            f.write("\nOPERACIONES REALIZADAS:\n\n")
+            if not operaciones:
+                f.write("No hay operaciones registradas.\n")
+            else:
+                for op in operaciones:
+                    f.write(f"Fecha: {op['fecha']}\n")
+                    f.write(f"  Tipo: {op['tipo']}\n")
+                    f.write(f"  Empresa: {op['empresa']}\n")
+                    f.write(f"  Cantidad: {op['cantidad']}\n")
+                    f.write(f"  Precio unitario: ${op['precio_unitario']}\n")
+                    f.write(f"  Comisión: ${op['comision']}\n")
+                    f.write(f"  Total: ${op['valor_total']}\n")
+                    f.write("-" * 40 + "\n")
+        
+        messagebox.showinfo("Éxito", "Reporte exportado como 'reporte_portafolio.txt'")
 
-def cargar_portafolio():
-    print("\n" + "="*70)
-    print("       CMN InverGest — CARGA DE DATOS DESDE APIs FINANCIERAS")
-    print("="*70 + "\n")
-    portafolio = []
-    for nombre, datos in EMPRESAS.items():
-        empresa = DatosEmpresa(nombre, datos["ticker"], datos["sector"], datos["tipo"])
-        if empresa.cargar_datos():
-            portafolio.append(empresa)
-    return portafolio
-
-def mostrar_tabla_comparativa(portafolio):
-    print("\n" + "="*70)
-    print("                  RESUMEN COMPARATIVO DEL PORTAFOLIO")
-    print("="*70)
-    datos_tabla = [empresa.resumen() for empresa in portafolio]
-    df = pd.DataFrame(datos_tabla)
-    df = df.set_index("Nombre")
-    print(df.to_string())
-    print("\n")
-    return df
-
-def graficar_dividendos(portafolio):
-    print("Generando gráfico de comparación de dividendos...")
-    fig, ejes = plt.subplots(2, 1, figsize=(14, 10))
-    nombres = [e.nombre for e in portafolio]
-    rendimientos = [e.dividendo_rendimiento for e in portafolio]
-    colores = ['#2ecc71' if r > 2 else '#f39c12' if r > 0 else '#e74c3c' for r in rendimientos]
-    ejes[0].bar(nombres, rendimientos, color=colores)
-    ejes[0].set_title("Rendimiento por Dividendo Actual (%)", fontsize=14, fontweight='bold')
-    ejes[0].set_ylabel("Rendimiento (%)", fontsize=12)
-    ejes[0].tick_params(axis='x', rotation=30)
-    ejes[0].grid(axis='y', alpha=0.3)
-    pagos = [len(e.dividendos_historicos) if e.dividendos_historicos is not None else 0 for e in portafolio]
-    ejes[1].bar(nombres, pagos, color='#3498db')
-    ejes[1].set_title("Cantidad Total de Pagos de Dividendos Históricos", fontsize=14, fontweight='bold')
-    ejes[1].set_ylabel("Número de Pagos", fontsize=12)
-    ejes[1].tick_params(axis='x', rotation=30)
-    ejes[1].grid(axis='y', alpha=0.3)
-    plt.suptitle("CMN InverGest — Análisis de Dividendos", fontsize=18, fontweight='bold', y=0.98)
-    plt.tight_layout()
-    plt.savefig('analisis_dividendos.png', dpi=300, bbox_inches='tight')
-    print("Gráfico guardado: analisis_dividendos.png")
-    plt.show()
-
-def graficar_evolucion_dividendos(portafolio):
-    print("Generando gráfico de evolución histórica de dividendos...")
-    fig, eje = plt.subplots(figsize=(16, 8))
-    colores = {
-        "Nike": "#E74C3C",
-        "Coca-Cola": "#E67E22",
-        "Johnson & Johnson": "#27AE60",
-        "PepsiCo": "#9B59B6",
-        "Apple": "#3498DB",
-        "Microsoft": "#1ABC9C",
-        "Visa": "#F1C40F"
-    }
-    for empresa in portafolio:
-        if empresa.dividendos_historicos is not None and not empresa.dividendos_historicos.empty:
-            datos = empresa.dividendos_historicos.resample('Y').sum()
-            if len(datos) > 0:
-                eje.plot(datos.index.year, datos.values,
-                        marker='o', linewidth=2.5, markersize=6,
-                        label=empresa.nombre, color=colores.get(empresa.nombre, '#888888'),
-                        alpha=0.8)
-    eje.set_title("Evolución Anual de Dividendos Pagados por Empresa", fontsize=16, fontweight='bold', pad=20)
-    eje.set_xlabel("Año", fontsize=12)
-    eje.set_ylabel("Dividendo Total por Año ($)", fontsize=12)
-    eje.legend(loc='upper left', bbox_to_anchor=(0, 1), fontsize=10)
-    eje.grid(alpha=0.3)
-    plt.suptitle("CMN InverGest — Histórico de Dividendos", fontsize=18, fontweight='bold', y=1.02)
-    plt.tight_layout()
-    plt.savefig('evolucion_dividendos.png', dpi=300, bbox_inches='tight')
-    print("Gráfico guardado: evolucion_dividendos.png")
-    plt.show()
-
-def main():
-    print("\n" + "🔥"*35)
-    print("          CMN InverGest — SISTEMA DE ANÁLISIS DE PORTAFOLIO")
-    print("           Consultando datos en tiempo real desde APIs...")
-    print("🔥"*35 + "\n")
-    portafolio = cargar_portafolio()
-    df_resumen = mostrar_tabla_comparativa(portafolio)
-    graficar_dividendos(portafolio)
-    graficar_evolucion_dividendos(portafolio)
-    df_resumen.to_excel('resumen_portafolio.xlsx')
-    print("Reporte guardado: resumen_portafolio.xlsx")
-    print("\nAnálisis completado exitosamente!")
 
 if __name__ == "__main__":
-    main()
+    root = tk.Tk()
+    app = TableroInverGest(root)
+    root.mainloop()
