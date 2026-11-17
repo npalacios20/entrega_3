@@ -426,7 +426,16 @@ class TableroInverGest:
             self.ejes.tick_params(axis='x', colors="#94A3B8", labelsize=9)
             self.ejes.tick_params(axis='y', colors="#94A3B8", labelsize=9)
             for spine in self.ejes.spines.values():
-                spine.set_color('#475569')
+                spine.set_color('#475569')    
+            try:
+                ticker = self.gestor.empresas[nombre_empresa]["ticker"]
+                activo = yf.Ticker(ticker)
+                info = activo.info
+                rend_div = info.get('dividendYield', 0.0) * 100
+                self.ejes.set_title(f"Dividendos: {rend_div:.2f}%", 
+                                   pad=10, loc='right', fontsize=11, color="#00F5D4")
+            except:
+                pass
         self.figura.tight_layout()
         self.lienzo.draw()
 
