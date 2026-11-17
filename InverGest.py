@@ -431,9 +431,12 @@ class TableroInverGest:
                 ticker = self.gestor.empresas[nombre_empresa]["ticker"]
                 activo = yf.Ticker(ticker)
                 info = activo.info
-                rend_div = info.get('dividendYield', 0.0) * 100
-                self.ejes.set_title(f"Dividendos: {rend_div:.2f}%", 
-                                   pad=10, loc='right', fontsize=11, color="#00F5D4")
+                rend_div = info.get('dividendYield', 0.0)
+                porcentaje_div = rend_div * 100
+                precio_actual = info.get('currentPrice', 0.0)
+                valor_div_anual = precio_actual * rend_div
+                self.ejes.set_title(f"Dividendos: {porcentaje_div:.2f}%  |  ${valor_div_anual:.2f}/acc/año", 
+                                   pad=10, loc='right', fontsize=9, color="#00F5D4")
             except:
                 pass
         self.figura.tight_layout()
