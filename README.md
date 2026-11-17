@@ -27,6 +27,57 @@ Desde una perspectiva técnica, el proyecto integra principios de programación 
 
 ### Funcionamiento
 
+1. Tener instalado **Python**
+2. Instalar las librerías necesarias ejecutando en la terminal: pip install yfinance matplotlib pandas
+3. Escribe en la terminal:python InverGest.py
+4. Se abrirá la ventana principal del sistema
+   
+  ### 1️⃣ Seleccionar una empresa: 
+  
+En la parte superior verás los nombres de las empresas disponibles:
+- Nike
+- Coca-Cola
+- Johnson & Johnson
+- PepsiCo
+- Apple
+- Microsoft
+- Visa
+
+### 2️⃣ Registrar una compra
+
+1. Haz clic en el botón **🟢 COMPRAR**
+2. Verifica que aparezca la empresa correcta
+3. Escribe la **cantidad** de acciones
+4. Escribe el **precio por acción**
+5. Escribe el valor de la **comisión** que cobra el bróker
+6. Pulsa **Confirmar** ✅
+
+### 3️⃣ Registrar una venta
+
+1. Haz clic en el botón **🔴 VENDER**
+2. Selecciona la empresa de la que quieres vender acciones
+3. Escribe la **cantidad** de acciones a vender
+4. Escribe el **precio de venta por acción**
+5. Escribe la **comisión** de la operación
+6. Pulsa **Confirmar** ✅
+
+### 4️⃣ Ver el gráfico
+
+En el centro de la pantalla verás la evolución de precios mensuales de la empresa seleccionada. Cada punto muestra su valor exacto al pasar el cursor.
+
+### 5️⃣ Consultar el análisis de tu portafolio
+
+En el panel derecho pulsa el botón **Actualizar Proyección** para ver:
+
+- 📈 Tus compras activas actuales
+- 💵 Valor invertido vs. valor actual
+- ➕ Ganancia o pérdida de cada inversión
+- 📊 Ventas cerradas y su resultado
+- 💰 Ganancias acumuladas totales
+
+### 6️⃣ Reiniciar todo
+
+Si quieres empezar de cero, pulsa **Eliminar Todo** en el panel izquierdo. Se reiniciará tu saldo a $50,000,000 COP y se borrará el historial.
 
 ### Diagrama
 
