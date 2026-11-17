@@ -2,8 +2,9 @@
 
 import queue
 import threading
+import math
 import tkinter as tk
-from tkinter import ttk, messagebox
+from tkinter import ttk, messagebox, simpledialog
 from datetime import datetime
 
 from matplotlib.figure import Figure
@@ -275,6 +276,9 @@ class TableroInverGest:
             marco, text="↻", command=self.usar_precio_actual, bg="#3B82F6", fg="white",
             font=("Segoe UI", 9, "bold"), relief=tk.FLAT, cursor="hand2", width=3)
         self.btn_precio_mercado.grid(row=6, column=2, padx=(4, 0), sticky="w")
+        self.lbl_cierre_info = tk.Label(marco, text="Se consulta el cierre histórico según la fecha.",
+                                        bg=c["panel"], fg=c["gris"], font=("Segoe UI", 8))
+        self.lbl_cierre_info.grid(row=13, column=0, columnspan=3, sticky="w", pady=(2, 0))
 
         # Fila 7: comisión
         self.lbl_comision = etiqueta("Comisión (USD):")
@@ -283,7 +287,7 @@ class TableroInverGest:
         self.entry_comision.grid(row=7, column=1, pady=3, columnspan=2, sticky="w")
 
         # Fila 8: TRM (solo acciones)
-        lbl_trm_f = etiqueta("TRM (COP/USD):")
+        lbl_trm_f = etiqueta("TRM histórica (COP/USD):")
         lbl_trm_f.grid(row=8, column=0, sticky="w", pady=3)
         self.entry_trm = entrada()
         self.entry_trm.grid(row=8, column=1, pady=3, columnspan=2, sticky="w")
@@ -300,15 +304,22 @@ class TableroInverGest:
         self.entry_vencimiento = entrada()
         self.entry_vencimiento.grid(row=10, column=1, pady=3, columnspan=2, sticky="w")
 
-        tk.Button(marco, text="Confirmar", command=self.registrar_operacion,
-                  bg="#00F5D4", fg="#000000", font=("Segoe UI", 10, "bold"),
-                  padx=10, pady=5, relief=tk.FLAT, cursor="hand2"
-                  ).grid(row=11, column=0, columnspan=3, pady=(8, 4))
+        self.btn_confirmar = tk.Button(marco, text="Confirmar", command=self.registrar_operacion,
+                                       bg="#00F5D4", fg="#000000",
+                                       font=("Segoe UI", 10, "bold"), padx=10, pady=5,
+                                       relief=tk.FLAT, cursor="hand2")
+        self.btn_confirmar.grid(row=11, column=0, columnspan=3, pady=(8, 4))
 
         tk.Button(marco, text="Eliminar Todo", command=self.confirmar_reinicio,
                   bg="#6B7280", fg="white", font=("Segoe UI", 9, "bold"),
                   padx=10, pady=4, relief=tk.FLAT, cursor="hand2"
                   ).grid(row=12, column=0, columnspan=3, pady=2)
+
+        tk.Button(marco, text="Registrar cupón / interés RF",
+                  command=self.registrar_pago_renta_fija,
+                  bg="#2563EB", fg="white", font=("Segoe UI", 9, "bold"),
+                  padx=8, pady=4, relief=tk.FLAT, cursor="hand2"
+                  ).grid(row=14, column=0, columnspan=3, pady=3)
 
         # Grupos de widgets que se muestran/ocultan según categoría y tipo
         self.filas = {
@@ -319,6 +330,7 @@ class TableroInverGest:
             "tasa": [lbl_tasa, self.entry_tasa],
             "venc": [lbl_venc, self.entry_vencimiento],
             "btn_precio": [self.btn_precio_mercado],
+            "cierre_info": [self.lbl_cierre_info],
         }
 
     def _mostrar(self, clave, visible):
@@ -339,14 +351,21 @@ class TableroInverGest:
         self._mostrar("trm", rv)
         self._mostrar("tasa", (not rv) and compra)
         self._mostrar("venc", (not rv) and compra)
-        self._mostrar("btn_precio", rv)
+        self._mostrar("btn_precio", False)
+        self._mostrar("cierre_info", True)
 
         if rv:
+            self.lbl_cierre_info.config(text="Se consulta el cierre histórico según la fecha.")
             self.lbl_activo.config(text="Empresa:")
             self.lbl_cantidad.config(text="Cantidad (acciones):")
-            self.lbl_precio.config(text="Precio (USD):")
+            self.lbl_precio.config(text="Cierre histórico (USD):")
             self.lbl_comision.config(text="Comisión (USD):")
+            self.entry_precio.config(state="readonly")
         else:
+            self.lbl_cierre_info.config(
+                text="Devolución de capital: registra una venta; deja el valor vacío para calcular capital + interés."
+            )
+            self.entry_precio.config(state="normal")
             self.lbl_activo.config(text="Emisor / Nombre:")
             self.lbl_cantidad.config(text="Cantidad (títulos):")
             self.lbl_precio.config(text="Valor unit. (COP):" if compra else "Valor venta (COP):")
@@ -379,6 +398,7 @@ class TableroInverGest:
             self.tabla_op.column(col, width=ancho, anchor="center")
         self.tabla_op.tag_configure("Compra", foreground=c["positivo"])
         self.tabla_op.tag_configure("Venta", foreground=c["negativo"])
+        self.tabla_op.tag_configure("Ingreso RF", foreground=c["positivo"])
 
         scrollbar = ttk.Scrollbar(marco, orient=tk.VERTICAL, command=self.tabla_op.yview)
         self.tabla_op.configure(yscrollcommand=scrollbar.set)
@@ -607,15 +627,26 @@ class TableroInverGest:
     # ======================================================================
     @staticmethod
     def _num(entry, nombre, obligatorio=True):
-        texto = entry.get().strip().replace(",", ".")
+        texto = entry.get().strip().replace(" ", "")
         if not texto:
             if obligatorio:
                 raise ValueError(f"Ingresa un valor para: {nombre}")
             return None
+        # Acepta decimal con coma o punto y separadores de miles habituales.
+        if "," in texto and "." in texto:
+            if texto.rfind(",") > texto.rfind("."):
+                texto = texto.replace(".", "").replace(",", ".")
+            else:
+                texto = texto.replace(",", "")
+        elif "," in texto:
+            texto = texto.replace(",", ".")
         try:
-            return float(texto)
+            valor = float(texto)
         except ValueError:
             raise ValueError(f"Valor numérico inválido en: {nombre}")
+        if not math.isfinite(valor):
+            raise ValueError(f"El valor de {nombre} debe ser finito")
+        return valor
 
     def registrar_operacion(self):
         tipo = self.var_tipo.get()
@@ -625,76 +656,155 @@ class TableroInverGest:
         try:
             cantidad = self._num(self.entry_cantidad, "Cantidad")
             comision = self._num(self.entry_comision, "Comisión", obligatorio=False) or 0.0
+            if cantidad <= 0 or comision < 0:
+                raise ValueError("La cantidad debe ser mayor que cero y la comisión no puede ser negativa")
 
             if categoria == CATEGORIA_RV:
                 nombre = self.combo_empresa.get()
                 if not nombre:
-                    messagebox.showwarning("Advertencia", "Selecciona una empresa")
-                    return
-                precio = self._num(self.entry_precio, "Precio")
-                trm = self._num(self.entry_trm, "TRM", obligatorio=False)
+                    raise ValueError("Selecciona una empresa")
+                fecha_obj = self.gestor.parsear_fecha(fecha)
+                if fecha_obj > datetime.now().date():
+                    raise ValueError("La fecha de la operación no puede ser futura")
+                trm_override = self._num(self.entry_trm, "TRM", obligatorio=False)
+                if trm_override is not None and trm_override <= 0:
+                    raise ValueError("La TRM debe ser mayor que cero")
                 subtipo, tasa, vencimiento = "Acción", None, None
+                self.lbl_cierre_info.config(text="Consultando cierre histórico...")
+                self.btn_confirmar.config(state=tk.DISABLED)
+
+                def cierre_listo(resultado):
+                    self.btn_confirmar.config(state=tk.NORMAL)
+                    if isinstance(resultado, Exception):
+                        self.lbl_cierre_info.config(text="No se pudo consultar el cierre.")
+                        messagebox.showerror("Precio histórico", str(resultado))
+                        return
+                    precio, fecha_cierre, trm_usada, fecha_trm = resultado
+                    self._finalizar_registro(
+                        tipo, nombre, cantidad, precio, comision, categoria, subtipo,
+                        tasa, vencimiento, fecha, trm_usada, fecha_cierre, fecha_trm
+                    )
+
+                def consultar_datos_operacion():
+                    precio_cierre, fecha_cierre = self.gestor.obtener_precio_cierre(nombre, fecha_obj)
+                    if trm_override is None:
+                        trm_historica, fecha_trm = self.gestor.obtener_trm_fecha(fecha_obj)
+                    else:
+                        trm_historica, fecha_trm = trm_override, None
+                    return precio_cierre, fecha_cierre, trm_historica, fecha_trm
+
+                self.ejecutar_async(consultar_datos_operacion, cierre_listo)
+                return
+
+            nombre = self.combo_nombre.get().strip()
+            if not nombre:
+                raise ValueError("Escribe el emisor o nombre del título")
+            subtipo = self.combo_subtipo.get() if tipo == "Compra" else ""
+            trm = None
+            if tipo == "Compra":
+                precio = self._num(self.entry_precio, "Valor unitario")
+                tasa = self._num(self.entry_tasa, "Tasa E.A.")
+                vencimiento = self.entry_vencimiento.get().strip()
+                if not vencimiento:
+                    raise ValueError("Ingresa la fecha de vencimiento")
             else:
-                nombre = self.combo_nombre.get().strip()
-                if not nombre:
-                    messagebox.showwarning("Advertencia", "Escribe el emisor o nombre del título")
-                    return
-                subtipo = self.combo_subtipo.get()
-                trm = None
-                if tipo == "Compra":
-                    precio = self._num(self.entry_precio, "Valor unitario")
-                    tasa = self._num(self.entry_tasa, "Tasa E.A.")
-                    vencimiento = self.entry_vencimiento.get().strip()
-                    if not vencimiento:
-                        raise ValueError("Ingresa la fecha de vencimiento")
-                else:
-                    # Si se deja vacío, se vende al valor actual (capital + intereses)
-                    precio = self._num(self.entry_precio, "Valor de venta", obligatorio=False)
-                    tasa, vencimiento = None, None
+                precio = self._num(self.entry_precio, "Valor de venta", obligatorio=False)
+                tasa, vencimiento = None, None
         except ValueError as e:
             messagebox.showerror("Error", str(e))
             return
 
+        self._finalizar_registro(
+            tipo, nombre, cantidad, precio, comision, categoria, subtipo,
+            tasa, vencimiento, fecha, trm, None, None
+        )
+
+    def _finalizar_registro(self, tipo, nombre, cantidad, precio, comision,
+                            categoria, subtipo, tasa, vencimiento, fecha, trm,
+                            fecha_cierre, fecha_trm=None):
         exito, mensaje = self.gestor.registrar_operacion(
             tipo, nombre, cantidad, precio, comision,
             categoria=categoria, subtipo=subtipo, tasa=tasa,
-            vencimiento=vencimiento, fecha=fecha, trm=trm)
+            vencimiento=vencimiento, fecha=fecha, trm=trm,
+            fecha_precio=fecha_cierre, fecha_trm=fecha_trm
+        )
         if not exito:
             messagebox.showerror("Error", mensaje)
             return
 
-        messagebox.showinfo("Éxito", mensaje)
+        if categoria == CATEGORIA_RV:
+            trm_txt = (f"TRM: {trm:,.2f} COP/USD" +
+                       (f" ({fecha_trm.strftime('%d/%m/%Y')})" if fecha_trm else " (TRM manual/de respaldo)"))
+            self.lbl_cierre_info.config(
+                text=f"Cierre: {precio:.2f} USD · {fecha_cierre.strftime('%d/%m/%Y')} | {trm_txt}"
+            )
+            fecha_operacion = self.gestor.parsear_fecha(fecha)
+            if fecha_cierre < fecha_operacion:
+                messagebox.showinfo(
+                    "Operación registrada",
+                    f"{mensaje}. El {fecha_operacion.strftime('%d/%m/%Y')} no hubo rueda bursátil; "
+                    f"se utilizó el cierre del {fecha_cierre.strftime('%d/%m/%Y')} "
+                    f"(${precio:.2f} USD). La fecha de la operación se conservó."
+                )
+            else:
+                messagebox.showinfo("Éxito", f"{mensaje}. Cierre utilizado: ${precio:.2f} USD.")
+        else:
+            messagebox.showinfo("Éxito", mensaje)
+
+        self.entry_precio.config(state="normal")
         for entry in (self.entry_cantidad, self.entry_precio, self.entry_comision,
-                      self.entry_tasa, self.entry_vencimiento):
+                      self.entry_tasa, self.entry_vencimiento, self.entry_trm):
             entry.delete(0, tk.END)
         self.actualizar_formulario()
         self.actualizar_todo()
 
     def usar_precio_actual(self):
-        """Rellena el precio con el valor de mercado de la empresa elegida."""
-        empresa = self.combo_empresa.get()
-        if not empresa:
-            return
-        self.btn_precio_mercado.config(state=tk.DISABLED)
-
-        def listo(resultado):
-            self.btn_precio_mercado.config(state=tk.NORMAL)
-            if isinstance(resultado, Exception) or not resultado or resultado <= 0:
-                messagebox.showwarning("Advertencia", "No se pudo obtener el precio actual")
-                return
-            self.entry_precio.delete(0, tk.END)
-            self.entry_precio.insert(0, f"{resultado:.2f}")
-
-        self.ejecutar_async(lambda: self.gestor.obtener_precio_actual(empresa), listo)
+        """Compatibilidad: las operaciones de acciones usan cierre histórico, no precio en vivo."""
+        messagebox.showinfo(
+            "Precio de la operación",
+            "El precio se consulta automáticamente usando el cierre histórico de la fecha indicada."
+        )
 
     def _cargar_trm(self):
         def listo(trm):
             if isinstance(trm, Exception):
                 return
             self.lbl_trm.config(text=f"TRM: ${trm:,.2f} COP/USD")
-            if not self.entry_trm.get().strip():
-                self.entry_trm.insert(0, f"{trm:.2f}")
         self.ejecutar_async(self.gestor.obtener_trm, listo)
+
+    def registrar_pago_renta_fija(self):
+        """Registra un cupón/interés recibido de un título de renta fija."""
+        nombres = self.gestor.obtener_nombres_renta_fija()
+        if not nombres:
+            messagebox.showwarning("Sin títulos", "Primero registra una compra de CDT, bono o TES.")
+            return
+        nombre = simpledialog.askstring(
+            "Pago de renta fija", "Nombre exacto del título:\n" + ", ".join(nombres), parent=self.root
+        )
+        if nombre is None:
+            return
+        nombre = nombre.strip()
+        if nombre not in nombres:
+            messagebox.showerror("Título no encontrado", "Selecciona uno de los títulos registrados.")
+            return
+        monto = simpledialog.askfloat(
+            "Pago de renta fija", "Valor del cupón/interés recibido (COP):",
+            minvalue=0.01, parent=self.root
+        )
+        if monto is None:
+            return
+        fecha_txt = simpledialog.askstring(
+            "Fecha del pago", "Fecha del pago (DD/MM/AAAA):",
+            initialvalue=datetime.now().strftime("%d/%m/%Y"), parent=self.root
+        )
+        if fecha_txt is None:
+            return
+        exito, mensaje = self.gestor.registrar_pago_renta_fija(nombre, monto, fecha_txt)
+        if not exito:
+            messagebox.showerror("Pago no registrado", mensaje)
+            return
+        messagebox.showinfo("Pago registrado", mensaje)
+        self.actualizar_todo()
 
     def confirmar_reinicio(self):
         respuesta = messagebox.askyesno(
@@ -717,8 +827,10 @@ class TableroInverGest:
         for fila in self.tabla_op.get_children():
             self.tabla_op.delete(fila)
         for op in self.gestor.obtener_operaciones():
+            cantidad_txt = f"{op['cantidad']:g}" if op["tipo"] != "Ingreso RF" else "—"
+            tipo_txt = "Cupón RF" if op["tipo"] == "Ingreso RF" else op["tipo"]
             self.tabla_op.insert("", tk.END, tags=(op["tipo"],), values=(
-                op["fecha_txt"], op["tipo"], op["activo"], f"{op['cantidad']:g}",
+                op["fecha_txt"], tipo_txt, op["activo"], cantidad_txt,
                 f"{op['valor_total']:,.2f} {op['moneda']}"))
 
     def actualizar_saldos(self):
@@ -771,8 +883,8 @@ class TableroInverGest:
                      "desde la primera operación.")
         else:
             self.lbl_nota_ea.config(
-                text="Rentabilidad acumulada = (ganancia no realizada + realizada + dividendos) / "
-                     "total comprado. E.A. anualizada con los días desde la primera operación.")
+                text="La rentabilidad E.A. se calcula con flujos fechados (XIRR): compras, ventas, "
+                     "dividendos y valor actual de las posiciones abiertas.")
 
     def mostrar_distribucion(self, res):
         c = self.colores
@@ -871,7 +983,8 @@ class TableroInverGest:
         self._linea("Renta variable:", f"{res['pct_rv']:.2f}%")
         self._linea("Renta fija:", f"{res['pct_rf']:.2f}%")
         self._linea("Dividendos:", fmt_cop(res["dividendos_cop"]))
-        self._linea("Intereses RF:", fmt_cop(res["intereses_cop"]))
+        self._linea("Cupones RF cobrados:", fmt_cop(res.get("ingresos_rf_cop", 0.0)))
+        self._linea("Intereses RF pendientes:", fmt_cop(res["intereses_cop"]))
         self._linea("TRM usada:", f"${res['trm']:,.2f}")
         self._t("\n")
 

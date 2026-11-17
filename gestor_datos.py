@@ -1,28 +1,14 @@
 # -*- coding: utf-8 -*-
-"""
-gestor_datos.py
-===============
-Lógica, datos y cálculos del sistema CMN InverGest (seguimiento de portafolio).
-
-Características principales
----------------------------
-* Renta Variable: acciones (precios en tiempo real vía yfinance, en USD).
-* Renta Fija: CDT, Bonos y TES (en COP) con tasa E.A. y fecha de vencimiento.
-* Registro de compras y ventas con fecha, cantidad, precio, comisión.
-* Método FIFO para calcular el costo de lo vendido y las ganancias realizadas.
-* Dividendos recibidos (histórico de yfinance según las acciones que se tenían
-  el día anterior a la fecha ex-dividendo).
-* Intereses acumulados de renta fija: capital * ((1 + E.A.)^(días/365) - 1).
-* Todo el portafolio se consolida en COP usando la TRM (USD/COP).
-* Cálculos: valor invertido, valor actual, distribución RF/RV,
-  rentabilidad acumulada y rentabilidad efectiva anual (E.A.).
-"""
 
 import time
+import math
 from datetime import datetime, date, timedelta
 
 import pandas as pd
-import yfinance as yf
+try:
+    import yfinance as yf
+except ImportError:  # Permite abrir el proyecto y probar la lógica sin conexión a Yahoo
+    yf = None
 
 # --------------------------------------------------------------------------
 # Constantes
@@ -58,8 +44,10 @@ class GestorDatos:
 
         self._contador_ops = 0
         self._cache_precios = {}
+        self._cache_cierres = {}
         self._cache_dividendos = {}
         self._cache_trm = None
+        self._cache_trm_historica = {}
 
     # ======================================================================
     # Utilidades generales
@@ -117,6 +105,45 @@ class GestorDatos:
         self._cache_trm = (TRM_RESPALDO, ahora - TTL_TRM + 60)
         return TRM_RESPALDO
 
+    def obtener_trm_fecha(self, fecha_operacion):
+        """Consulta la TRM histórica USD/COP de la fecha o el último cierre previo.
+
+        Si Yahoo no entrega datos, devuelve la TRM disponible/respaldo y fecha None,
+        para que la interfaz pueda advertir que no fue posible usar la histórica.
+        """
+        fecha_operacion = self.parsear_fecha(fecha_operacion)
+        clave = fecha_operacion
+        if clave in self._cache_trm_historica:
+            return self._cache_trm_historica[clave]
+        if yf is not None:
+            try:
+                inicio = fecha_operacion - timedelta(days=10)
+                fin = fecha_operacion + timedelta(days=1)
+                historico = yf.Ticker("COP=X").history(
+                    start=inicio.isoformat(), end=fin.isoformat(), interval="1d",
+                    auto_adjust=False, actions=False
+                )
+                candidatos = []
+                if historico is not None and not historico.empty and "Close" in historico:
+                    for indice, fila in historico.iterrows():
+                        dia = indice.date() if hasattr(indice, "date") else self.parsear_fecha(indice)
+                        try:
+                            valor = float(fila["Close"])
+                        except (TypeError, ValueError):
+                            continue
+                        if dia <= fecha_operacion and math.isfinite(valor) and valor > 0:
+                            candidatos.append((dia, valor))
+                if candidatos:
+                    dia, valor = max(candidatos, key=lambda x: x[0])
+                    self._cache_trm_historica[clave] = (valor, dia)
+                    return valor, dia
+            except Exception as exc:
+                print(f"Error obteniendo TRM histórica: {exc}")
+        respaldo = self.obtener_trm()
+        resultado = (respaldo, None)
+        self._cache_trm_historica[clave] = resultado
+        return resultado
+
     def obtener_datos_historicos(self, nombre_empresa):
         ticker = self.empresas[nombre_empresa]["ticker"]
         try:
@@ -127,9 +154,68 @@ class GestorDatos:
             print(f"Error obteniendo datos: {e}")
             return pd.DataFrame(), "#00f5d4"
 
+    def obtener_precio_cierre(self, nombre_empresa, fecha_operacion):
+        """Obtiene el cierre histórico de la fecha; si no hubo rueda, usa el cierre previo.
+
+        Retorna (precio_usd, fecha_del_cierre_utilizado). No sustituye la fecha
+        contable de la operación: únicamente informa qué cierre se tomó como referencia.
+        """
+        if yf is None:
+            raise RuntimeError("Falta instalar yfinance. Ejecuta: pip install -r requirements.txt")
+        if nombre_empresa not in self.empresas:
+            raise ValueError("Empresa no reconocida")
+        fecha_operacion = self.parsear_fecha(fecha_operacion)
+        if fecha_operacion > date.today():
+            raise ValueError("La fecha de la operación no puede ser futura")
+
+        ticker = self.empresas[nombre_empresa]["ticker"]
+        clave = (ticker, fecha_operacion)
+        if clave in self._cache_cierres:
+            return self._cache_cierres[clave]
+
+        # Yahoo usa end exclusivo. La ventana adicional permite resolver fines de
+        # semana y festivos sin alterar la fecha original registrada.
+        inicio = fecha_operacion - timedelta(days=10)
+        fin = fecha_operacion + timedelta(days=1)
+        try:
+            historico = yf.Ticker(ticker).history(
+                start=inicio.isoformat(), end=fin.isoformat(), interval="1d",
+                auto_adjust=False, actions=False
+            )
+        except Exception as exc:
+            raise RuntimeError(f"No fue posible consultar el cierre histórico de {ticker}: {exc}")
+
+        if historico is None or historico.empty or "Close" not in historico:
+            raise RuntimeError(f"Yahoo Finance no devolvió cierres históricos para {ticker}.")
+
+        candidatos = []
+        for indice, fila in historico.iterrows():
+            fecha_cierre = indice.date() if hasattr(indice, "date") else self.parsear_fecha(indice)
+            try:
+                cierre = float(fila["Close"])
+            except (TypeError, ValueError):
+                continue
+            if fecha_cierre <= fecha_operacion and math.isfinite(cierre) and cierre > 0:
+                candidatos.append((fecha_cierre, cierre))
+
+        if not candidatos:
+            raise RuntimeError(
+                f"No hay un cierre bursátil disponible para {nombre_empresa} en los 10 días "
+                "anteriores a la fecha seleccionada. Verifica la fecha o intenta más tarde."
+            )
+        fecha_cierre, precio = max(candidatos, key=lambda x: x[0])
+        resultado = (precio, fecha_cierre)
+        self._cache_cierres[clave] = resultado
+        return resultado
+
     @staticmethod
     def _consultar_precio(ticker):
-        activo = yf.Ticker(ticker)
+        if yf is None:
+            return 0.0
+        try:
+            activo = yf.Ticker(ticker)
+        except Exception:
+            return 0.0
         try:
             precio = float(activo.fast_info["last_price"])
             if precio > 0:
@@ -195,7 +281,8 @@ class GestorDatos:
     # ======================================================================
     def registrar_operacion(self, tipo, nombre, cantidad, precio, comision,
                             categoria=CATEGORIA_RV, subtipo="Acción",
-                            tasa=None, vencimiento=None, fecha=None, trm=None):
+                            tasa=None, vencimiento=None, fecha=None, trm=None,
+                            fecha_precio=None, fecha_trm=None):
         """
         Registra una compra o venta.
 
@@ -218,32 +305,36 @@ class GestorDatos:
             return False, "Categoría de activo inválida"
         if not nombre:
             return False, "Selecciona o escribe el activo"
-        if cantidad is None or cantidad <= 0:
-            return False, "La cantidad debe ser mayor que cero"
-        if comision is None or comision < 0:
-            return False, "La comisión no puede ser negativa"
+        if cantidad is None or not math.isfinite(float(cantidad)) or cantidad <= 0:
+            return False, "La cantidad debe ser un número finito mayor que cero"
+        if comision is None or not math.isfinite(float(comision)) or comision < 0:
+            return False, "La comisión debe ser un número finito y no puede ser negativa"
         if fecha > date.today():
             return False, "La fecha de la operación no puede ser futura"
 
         if categoria == CATEGORIA_RV:
             if nombre not in self.empresas:
                 return False, "Empresa no reconocida"
-            if precio is None or precio <= 0:
-                return False, "El precio debe ser mayor que cero"
+            if precio is None or not math.isfinite(float(precio)) or precio <= 0:
+                return False, "El precio debe ser un número finito mayor que cero"
             subtipo = "Acción"
             tasa, vencimiento = None, None
             if trm is None:
                 trm = self.obtener_trm()
-            if trm <= 0:
-                return False, "La TRM debe ser mayor que cero"
+            if not math.isfinite(float(trm)) or trm <= 0:
+                return False, "La TRM debe ser un número finito mayor que cero"
         else:
             if subtipo not in TIPOS_RENTA_FIJA and tipo == "Compra":
                 return False, "Tipo de renta fija inválido (CDT, Bono o TES)"
             trm = 1.0
             if tipo == "Compra":
-                if precio is None or precio <= 0:
-                    return False, "El valor unitario debe ser mayor que cero"
-                if tasa is None or tasa < 0:
+                existentes = [o for o in self.historial_operaciones
+                              if o["categoria"] == CATEGORIA_RF and o["activo"] == nombre]
+                if existentes and any(o["subtipo"] != subtipo for o in existentes):
+                    return False, "Ya existe un título con ese nombre y otro tipo. Usa un nombre distinto."
+                if precio is None or not math.isfinite(float(precio)) or precio <= 0:
+                    return False, "El valor unitario debe ser un número finito mayor que cero"
+                if tasa is None or not math.isfinite(float(tasa)) or tasa < 0:
                     return False, "Ingresa una tasa E.A. válida (%)"
                 if vencimiento is None or vencimiento <= fecha:
                     return False, "El vencimiento debe ser posterior a la fecha de compra"
@@ -256,11 +347,32 @@ class GestorDatos:
                 subtipo = lote["subtipo"]
                 tasa, vencimiento = lote["tasa"], lote["vencimiento"]
                 if precio is None:
-                    interes, _ = self.calcular_interes(
-                        lote["precio"], lote["tasa"], lote["fecha"], fecha, lote["vencimiento"])
-                    precio = lote["precio"] + interes
-                if precio <= 0:
-                    return False, "El valor unitario debe ser mayor que cero"
+                    # Precio promedio ponderado de los lotes que realmente se venderán,
+                    # incluyendo el interés contractual acumulado de cada lote.
+                    restante = float(cantidad)
+                    valor_estimado = 0.0
+                    pagos_por_lote = {}
+                    for pago in previas:
+                        if pago.get("tipo") == "Ingreso RF":
+                            for asignacion in pago.get("asignaciones", []):
+                                oid = asignacion["op_id"]
+                                pagos_por_lote[oid] = pagos_por_lote.get(oid, 0.0) + asignacion["por_unidad"]
+                    for lote_fifo in lotes:
+                        if restante <= EPS:
+                            break
+                        usar = min(restante, lote_fifo["cantidad"])
+                        capital_lote = usar * lote_fifo["precio"]
+                        interes, _ = self.calcular_interes(
+                            capital_lote, lote_fifo["tasa"], lote_fifo["fecha"],
+                            fecha, lote_fifo["vencimiento"])
+                        interes_pagado = pagos_por_lote.get(lote_fifo["op_id"], 0.0) * usar
+                        valor_estimado += capital_lote + max(interes - interes_pagado, 0.0)
+                        restante -= usar
+                    if restante > EPS:
+                        return False, "No tienes suficientes unidades para vender en esa fecha"
+                    precio = valor_estimado / cantidad
+                if not math.isfinite(float(precio)) or precio <= 0:
+                    return False, "El valor unitario debe ser un número finito mayor que cero"
 
         self._contador_ops += 1
         bruto = cantidad * precio
@@ -269,6 +381,8 @@ class GestorDatos:
             "id": self._contador_ops,
             "fecha": fecha,
             "fecha_txt": fecha.strftime("%d/%m/%Y"),
+            "fecha_precio": self.parsear_fecha(fecha_precio) if fecha_precio else None,
+            "fecha_trm": self.parsear_fecha(fecha_trm) if fecha_trm else None,
             "tipo": tipo,
             "categoria": categoria,
             "subtipo": subtipo,
@@ -290,11 +404,67 @@ class GestorDatos:
         if not valido:
             return False, "No tienes suficientes unidades para vender en esa fecha"
 
-        if tipo == "Compra" and operacion["valor_total_cop"] > self.obtener_saldo() + 1e-6:
-            return False, "Saldo insuficiente"
+        if tipo == "Compra" and operacion["valor_total_cop"] > self.obtener_saldo(fecha_hasta=fecha) + 1e-6:
+            return False, "Saldo insuficiente para esa fecha de operación"
 
         self.historial_operaciones.append(operacion)
         return True, "Operación registrada con éxito"
+
+    def registrar_pago_renta_fija(self, nombre, monto, fecha=None):
+        """Registra un cupón/interés efectivamente recibido de un CDT, bono o TES.
+
+        El pago se asigna proporcionalmente a los lotes vigentes en esa fecha y
+        se descuenta del interés devengado pendiente para evitar doble conteo.
+        """
+        try:
+            fecha = self.parsear_fecha(fecha) if fecha not in (None, "") else date.today()
+            monto = float(monto)
+        except (ValueError, TypeError) as exc:
+            return False, f"Datos del pago inválidos: {exc}"
+        if fecha > date.today():
+            return False, "La fecha del pago no puede ser futura"
+        if not math.isfinite(monto) or monto <= 0:
+            return False, "El valor del pago debe ser un número mayor que cero"
+
+        operaciones_fecha = [o for o in self.historial_operaciones if o["fecha"] <= fecha]
+        lotes, _, valido = self._procesar_activo(CATEGORIA_RF, nombre, ops=operaciones_fecha)
+        if not valido or not lotes:
+            return False, "No hay títulos vigentes de ese activo en la fecha indicada"
+        lotes = [l for l in lotes if fecha <= l["vencimiento"]]
+        if not lotes:
+            return False, "El título ya había llegado a su vencimiento en la fecha del pago"
+        capital_total = sum(l["cantidad"] * l["precio"] for l in lotes)
+        if capital_total <= EPS:
+            return False, "No hay capital pendiente para asociar el pago"
+
+        # Distribuye el cupón según el capital nominal de cada lote, no solo por
+        # número de títulos (pueden existir compras a valores unitarios distintos).
+        asignaciones = [
+            {"op_id": l["op_id"], "por_unidad": monto * l["precio"] / capital_total}
+            for l in lotes if l["cantidad"] > EPS
+        ]
+        self._contador_ops += 1
+        self.historial_operaciones.append({
+            "id": self._contador_ops,
+            "fecha": fecha,
+            "fecha_txt": fecha.strftime("%d/%m/%Y"),
+            "fecha_precio": fecha,
+            "tipo": "Ingreso RF",
+            "categoria": CATEGORIA_RF,
+            "subtipo": "Cupón / interés",
+            "activo": nombre,
+            "cantidad": 0.0,
+            "precio_unitario": 0.0,
+            "comision": 0.0,
+            "tasa": None,
+            "vencimiento": None,
+            "trm": 1.0,
+            "moneda": "COP",
+            "valor_total": round(monto, 2),
+            "valor_total_cop": round(monto, 2),
+            "asignaciones": asignaciones,
+        })
+        return True, f"Pago de {monto:,.2f} COP registrado para {nombre}."
 
     def obtener_operaciones(self):
         return list(self.historial_operaciones)
@@ -347,6 +517,9 @@ class GestorDatos:
                     "tasa": o["tasa"],
                     "vencimiento": o["vencimiento"],
                 })
+                continue
+
+            if o["tipo"] != "Venta":
                 continue
 
             restante = o["cantidad"]
@@ -402,14 +575,20 @@ class GestorDatos:
     # ======================================================================
     # Saldos (no requieren internet)
     # ======================================================================
-    def obtener_saldo(self):
-        """Efectivo disponible en COP = saldo inicial - compras + ventas netas."""
+    def obtener_saldo(self, fecha_hasta=None):
+        """Efectivo disponible en COP: compras, ventas y cupones recibidos."""
         saldo = float(self.saldo_inicial)
+        limite = self.parsear_fecha(fecha_hasta) if fecha_hasta is not None else None
         for op in list(self.historial_operaciones):
+            if limite is not None and op["fecha"] > limite:
+                continue
+            if op["tipo"] == "Ingreso RF":
+                saldo += op["valor_total_cop"]
+                continue
             bruto = op["cantidad"] * op["precio_unitario"]
             if op["tipo"] == "Compra":
                 saldo -= (bruto + op["comision"]) * op["trm"]
-            else:
+            elif op["tipo"] == "Venta":
                 saldo += (bruto - op["comision"]) * op["trm"]
         return saldo
 
@@ -519,20 +698,34 @@ class GestorDatos:
         costo_cop = sum(l["cantidad"] * (l["precio"] + l["comision_unit"]) for l in lotes)
         interes = 0.0
         tasa_ponderada = 0.0
+        pagos_por_lote = {}
+        for op in self.historial_operaciones:
+            if op.get("tipo") == "Ingreso RF" and op["fecha"] <= hoy:
+                for asignacion in op.get("asignaciones", []):
+                    oid = asignacion["op_id"]
+                    pagos_por_lote[oid] = pagos_por_lote.get(oid, 0.0) + asignacion["por_unidad"]
+
         for l in lotes:
             capital_lote = l["cantidad"] * l["precio"]
             i, _ = self.calcular_interes(capital_lote, l["tasa"], l["fecha"], hoy, l["vencimiento"])
-            interes += i
+            interes_pagado_asignado = pagos_por_lote.get(l["op_id"], 0.0) * l["cantidad"]
+            interes += max(i - interes_pagado_asignado, 0.0)
             tasa_ponderada += l["tasa"] * capital_lote
         tasa_ponderada /= capital if capital > 0 else 1.0
 
-        vencimiento = min(l["vencimiento"] for l in lotes)
+        vencimientos_futuros = [l["vencimiento"] for l in lotes if l["vencimiento"] > hoy]
+        vencimiento = min(vencimientos_futuros) if vencimientos_futuros else max(
+            l["vencimiento"] for l in lotes
+        )
+        estado = "Vigente" if vencimientos_futuros else "Vencido"
         desde = min(l["fecha"] for l in lotes)
+        subtipos = {l["subtipo"] for l in lotes}
+        subtipo_posicion = next(iter(subtipos)) if len(subtipos) == 1 else "Varios"
         valor_actual = capital + interes
         resultado = valor_actual - costo_cop
         return {
             "categoria": CATEGORIA_RF,
-            "subtipo": lotes[0]["subtipo"],
+            "subtipo": subtipo_posicion,
             "activo": nombre,
             "cantidad": cantidad,
             "capital_cop": capital,
@@ -540,7 +733,7 @@ class GestorDatos:
             "vencimiento": vencimiento,
             "dias_transcurridos": max((hoy - desde).days, 0),
             "dias_para_vencer": (vencimiento - hoy).days,
-            "estado": "Vencido" if vencimiento <= hoy else "Vigente",
+            "estado": estado,
             "interes_cop": interes,
             "costo_cop": costo_cop,
             "valor_actual_cop": valor_actual,
@@ -552,6 +745,40 @@ class GestorDatos:
     # ======================================================================
     # Resumen global del portafolio
     # ======================================================================
+    @staticmethod
+    def _calcular_xirr(flujos):
+        """TIR efectiva anual para flujos con fechas irregulares (método bisección)."""
+        flujos = [(f, float(v)) for f, v in flujos if v and math.isfinite(float(v))]
+        if not flujos or not any(v < 0 for _, v in flujos) or not any(v > 0 for _, v in flujos):
+            return None
+        fecha_base = min(f for f, _ in flujos)
+        dias = [(f - fecha_base).days / 365.0 for f, _ in flujos]
+
+        def vpn(tasa):
+            try:
+                return sum(v / ((1.0 + tasa) ** d) for (_, v), d in zip(flujos, dias))
+            except (OverflowError, ZeroDivisionError):
+                return float("inf")
+
+        inferior, superior = -0.999999, 0.10
+        f_inf = vpn(inferior)
+        f_sup = vpn(superior)
+        while f_inf * f_sup > 0 and superior < 1_000_000:
+            superior = superior * 2 + 0.10
+            f_sup = vpn(superior)
+        if f_inf * f_sup > 0:
+            return None
+        for _ in range(250):
+            medio = (inferior + superior) / 2.0
+            f_med = vpn(medio)
+            if abs(f_med) < 1e-7 or (superior - inferior) < 1e-12:
+                return medio
+            if f_inf * f_med > 0:
+                inferior, f_inf = medio, f_med
+            else:
+                superior, f_sup = medio, f_med
+        return (inferior + superior) / 2.0
+
     def calcular_resumen_portafolio(self):
         """
         Calcula todos los indicadores del portafolio (en COP):
@@ -559,10 +786,10 @@ class GestorDatos:
         * total_invertido: costo (con comisiones) de las posiciones abiertas.
         * valor_actual: acciones a precio de mercado * TRM + renta fija con intereses.
         * distribución porcentual renta fija / renta variable (sobre valor_actual).
-        * resultado_total = ganancia no realizada + ganancia realizada + dividendos.
+        * resultado_total incluye ganancias realizadas/no realizadas, dividendos
+          y cupones de renta fija efectivamente recibidos.
         * rentabilidad acumulada = resultado_total / total comprado históricamente.
-        * rentabilidad E.A. = (1 + rent. acumulada)^(365/días) - 1, con los días
-          transcurridos desde la primera operación.
+        * rentabilidad E.A. se calcula mediante XIRR con fechas reales de flujos.
         """
         ops = list(self.historial_operaciones)
         hoy = date.today()
@@ -572,6 +799,7 @@ class GestorDatos:
         trm = self.obtener_trm() if any(o["categoria"] == CATEGORIA_RV for o in ops) else 1.0
         nombres_rv = [n for c, n in self._activos_registrados() if c == CATEGORIA_RV]
         dividendos_cop = sum(self.calcular_dividendos_activo(n)[0] for n in nombres_rv) * trm
+        ingresos_rf_cop = sum(o["valor_total_cop"] for o in ops if o["tipo"] == "Ingreso RF")
 
         total_invertido = sum(p["costo_cop"] for p in posiciones)
         valor_rv = sum(p["valor_actual_cop"] for p in posiciones if p["categoria"] == CATEGORIA_RV)
@@ -581,7 +809,8 @@ class GestorDatos:
 
         ganancia_no_realizada = valor_actual - total_invertido
         ganancia_realizada = sum(v["ganancia_perdida"] for v in ventas)
-        resultado_total = ganancia_no_realizada + ganancia_realizada + dividendos_cop
+        resultado_total = (ganancia_no_realizada + ganancia_realizada +
+                           dividendos_cop + ingresos_rf_cop)
 
         total_comprado = sum(
             (o["cantidad"] * o["precio_unitario"] + o["comision"]) * o["trm"]
@@ -589,13 +818,30 @@ class GestorDatos:
         rent_acum = (resultado_total / total_comprado * 100) if total_comprado > 0 else 0.0
 
         dias = (hoy - min(o["fecha"] for o in ops)).days if ops else 0
-        rent_ea = None
-        if total_comprado > 0:
-            base = 1 + rent_acum / 100.0
-            if base <= 0:
-                rent_ea = -100.0
-            else:
-                rent_ea = (base ** (365.0 / max(dias, 1)) - 1) * 100
+
+        # Rentabilidad E.A. ponderada por fechas (XIRR): compras = salidas,
+        # ventas/dividendos/valor final de posiciones = entradas.
+        flujos = []
+        for op in ops:
+            if op["tipo"] == "Compra":
+                importe = (op["cantidad"] * op["precio_unitario"] + op["comision"]) * op["trm"]
+                flujos.append((op["fecha"], -importe))
+            elif op["tipo"] == "Venta":
+                importe = (op["cantidad"] * op["precio_unitario"] - op["comision"]) * op["trm"]
+                flujos.append((op["fecha"], importe))
+            elif op["tipo"] == "Ingreso RF":
+                flujos.append((op["fecha"], op["valor_total_cop"]))
+
+        for nombre in nombres_rv:
+            _, detalle = self.calcular_dividendos_activo(nombre)
+            for dividendo in detalle:
+                # Yahoo entrega el evento histórico de dividendo; se usa su fecha
+                # reportada y la TRM vigente para expresar el flujo en COP.
+                flujos.append((dividendo["fecha"], dividendo["total_usd"] * trm))
+        if valor_actual > 0:
+            flujos.append((hoy, valor_actual))
+        tir = self._calcular_xirr(flujos)
+        rent_ea = tir * 100.0 if tir is not None else None
 
         saldo = self.obtener_saldo()
         return {
@@ -610,6 +856,7 @@ class GestorDatos:
             "pct_rv": (valor_rv / valor_actual * 100) if valor_actual > 0 else 0.0,
             "pct_rf": (valor_rf / valor_actual * 100) if valor_actual > 0 else 0.0,
             "dividendos_cop": dividendos_cop,
+            "ingresos_rf_cop": ingresos_rf_cop,
             "intereses_cop": intereses,
             "ganancia_no_realizada": ganancia_no_realizada,
             "ganancia_realizada": ganancia_realizada,
