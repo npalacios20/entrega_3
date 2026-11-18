@@ -355,12 +355,14 @@ class TableroInverGest:
         self._mostrar("cierre_info", True)
 
         if rv:
-            self.lbl_cierre_info.config(text="Se consulta el cierre histórico según la fecha.")
+            self.lbl_cierre_info.config(
+                text="Precio y TRM: ingrésalos si los conoces; si los dejas vacíos se consultan históricos."
+            )
             self.lbl_activo.config(text="Empresa:")
             self.lbl_cantidad.config(text="Cantidad (acciones):")
-            self.lbl_precio.config(text="Cierre histórico (USD):")
+            self.lbl_precio.config(text="Precio unitario (USD):")
             self.lbl_comision.config(text="Comisión (USD):")
-            self.entry_precio.config(state="readonly")
+            self.entry_precio.config(state="normal")
         else:
             self.lbl_cierre_info.config(
                 text="Devolución de capital: registra una venta; deja el valor vacío para calcular capital + interés."
@@ -666,32 +668,38 @@ class TableroInverGest:
                 fecha_obj = self.gestor.parsear_fecha(fecha)
                 if fecha_obj > datetime.now().date():
                     raise ValueError("La fecha de la operación no puede ser futura")
+                precio_manual = self._num(self.entry_precio, "Precio unitario", obligatorio=False)
+                if precio_manual is not None and precio_manual <= 0:
+                    raise ValueError("El precio debe ser mayor que cero")
                 trm_override = self._num(self.entry_trm, "TRM", obligatorio=False)
                 if trm_override is not None and trm_override <= 0:
                     raise ValueError("La TRM debe ser mayor que cero")
                 subtipo, tasa, vencimiento = "Acción", None, None
-                self.lbl_cierre_info.config(text="Consultando cierre histórico...")
+                self.lbl_cierre_info.config(text="Consultando datos históricos faltantes...")
                 self.btn_confirmar.config(state=tk.DISABLED)
 
                 def cierre_listo(resultado):
                     self.btn_confirmar.config(state=tk.NORMAL)
                     if isinstance(resultado, Exception):
-                        self.lbl_cierre_info.config(text="No se pudo consultar el cierre.")
-                        messagebox.showerror("Precio histórico", str(resultado))
+                        self.lbl_cierre_info.config(text="No se pudieron consultar los datos históricos.")
+                        messagebox.showerror("Datos históricos", str(resultado))
                         return
-                    precio, fecha_cierre, trm_usada, fecha_trm = resultado
+                    precio_final, fecha_cierre, trm_usada, fecha_trm = resultado
                     self._finalizar_registro(
-                        tipo, nombre, cantidad, precio, comision, categoria, subtipo,
+                        tipo, nombre, cantidad, precio_final, comision, categoria, subtipo,
                         tasa, vencimiento, fecha, trm_usada, fecha_cierre, fecha_trm
                     )
 
                 def consultar_datos_operacion():
-                    precio_cierre, fecha_cierre = self.gestor.obtener_precio_cierre(nombre, fecha_obj)
+                    if precio_manual is None:
+                        precio_final, fecha_cierre = self.gestor.obtener_precio_cierre(nombre, fecha_obj)
+                    else:
+                        precio_final, fecha_cierre = precio_manual, None
                     if trm_override is None:
                         trm_historica, fecha_trm = self.gestor.obtener_trm_fecha(fecha_obj)
                     else:
                         trm_historica, fecha_trm = trm_override, None
-                    return precio_cierre, fecha_cierre, trm_historica, fecha_trm
+                    return precio_final, fecha_cierre, trm_historica, fecha_trm
 
                 self.ejecutar_async(consultar_datos_operacion, cierre_listo)
                 return
@@ -733,21 +741,26 @@ class TableroInverGest:
             return
 
         if categoria == CATEGORIA_RV:
-            trm_txt = (f"TRM: {trm:,.2f} COP/USD" +
-                       (f" ({fecha_trm.strftime('%d/%m/%Y')})" if fecha_trm else " (TRM manual/de respaldo)"))
-            self.lbl_cierre_info.config(
-                text=f"Cierre: {precio:.2f} USD · {fecha_cierre.strftime('%d/%m/%Y')} | {trm_txt}"
-            )
             fecha_operacion = self.gestor.parsear_fecha(fecha)
-            if fecha_cierre < fecha_operacion:
-                messagebox.showinfo(
-                    "Operación registrada",
-                    f"{mensaje}. El {fecha_operacion.strftime('%d/%m/%Y')} no hubo rueda bursátil; "
-                    f"se utilizó el cierre del {fecha_cierre.strftime('%d/%m/%Y')} "
-                    f"(${precio:.2f} USD). La fecha de la operación se conservó."
-                )
+            if fecha_cierre:
+                precio_txt = (f"Precio tomado del cierre histórico: ${precio:.2f} USD "
+                              f"({fecha_cierre.strftime('%d/%m/%Y')})")
+                if fecha_cierre < fecha_operacion:
+                    precio_txt += "\nNo hubo rueda bursátil en la fecha indicada; se tomó el último cierre anterior."
             else:
-                messagebox.showinfo("Éxito", f"{mensaje}. Cierre utilizado: ${precio:.2f} USD.")
+                precio_txt = f"Precio manual ingresado: ${precio:.2f} USD"
+            if fecha_trm:
+                trm_txt = f"TRM histórica consultada: ${trm:,.2f} COP/USD ({fecha_trm.strftime('%d/%m/%Y')})"
+            elif self._num(self.entry_trm, "TRM", obligatorio=False) is not None:
+                trm_txt = f"TRM manual ingresada: ${trm:,.2f} COP/USD"
+            else:
+                trm_txt = f"ADVERTENCIA: no se obtuvo fecha histórica de TRM; se usó respaldo ${trm:,.2f} COP/USD"
+            self.lbl_cierre_info.config(text=f"{precio_txt} | {trm_txt}")
+            messagebox.showinfo(
+                "Operación registrada",
+                f"{mensaje}.\n{precio_txt}.\n{trm_txt}.\n"
+                f"Fecha contable de la operación: {fecha_operacion.strftime('%d/%m/%Y')}."
+            )
         else:
             messagebox.showinfo("Éxito", mensaje)
 
@@ -1010,6 +1023,15 @@ class TableroInverGest:
             self._linea("Dividendos cobrados:", fmt_cop(p["dividendos_cop"]))
             self._linea("Rend. dividendo:", f"{p['rend_div_pct']:.2f}% anual "
                                             f"(${p['div_anual_accion']:.2f}/acc)")
+            # Desglose auditable: monto por acción, cantidad elegible, TRM y COP.
+            for div in p.get("detalle_dividendos", []):
+                fecha_txt = div["fecha"].strftime("%d/%m/%Y")
+                fecha_trm_txt = (div["fecha_trm"].strftime("%d/%m/%Y")
+                                 if div.get("fecha_trm") else "respaldo sin fecha histórica")
+                self._linea("  Div. " + fecha_txt + ":",
+                            f"{div['cantidad']:g} x ${div['por_accion']:.4f} USD")
+                self._linea("  TRM " + fecha_trm_txt + ":",
+                            f"${div['trm']:,.2f} -> {fmt_cop(div['total_cop'])}")
             self._t("-" * 38 + "\n\n", "gris")
 
     def _mostrar_renta_fija_texto(self, posiciones):

@@ -13,7 +13,7 @@ except ImportError:  # Permite abrir el proyecto y probar la lógica sin conexi�
 # --------------------------------------------------------------------------
 # Constantes
 # --------------------------------------------------------------------------
-SALDO_INICIAL = 50_000_000          # COP
+SALDO_INICIAL = 100_000_000          # COP
 TRM_RESPALDO = 4000.0               # Se usa solo si no hay conexión
 CATEGORIA_RV = "Renta Variable"
 CATEGORIA_RF = "Renta Fija"
@@ -315,12 +315,22 @@ class GestorDatos:
         if categoria == CATEGORIA_RV:
             if nombre not in self.empresas:
                 return False, "Empresa no reconocida"
-            if precio is None or not math.isfinite(float(precio)) or precio <= 0:
+            if precio is None:
+                # Si el usuario no indicó precio, usar el cierre histórico de la fecha.
+                try:
+                    precio, fecha_cierre_auto = self.obtener_precio_cierre(nombre, fecha)
+                    if fecha_precio is None:
+                        fecha_precio = fecha_cierre_auto
+                except Exception as exc:
+                    return False, f"No se pudo obtener el cierre histórico y no ingresaste un precio manual: {exc}"
+            if not math.isfinite(float(precio)) or precio <= 0:
                 return False, "El precio debe ser un número finito mayor que cero"
             subtipo = "Acción"
             tasa, vencimiento = None, None
             if trm is None:
-                trm = self.obtener_trm()
+                trm, fecha_trm_auto = self.obtener_trm_fecha(fecha)
+                if fecha_trm is None:
+                    fecha_trm = fecha_trm_auto
             if not math.isfinite(float(trm)) or trm <= 0:
                 return False, "La TRM debe ser un número finito mayor que cero"
         else:
@@ -590,6 +600,17 @@ class GestorDatos:
                 saldo -= (bruto + op["comision"]) * op["trm"]
             elif op["tipo"] == "Venta":
                 saldo += (bruto - op["comision"]) * op["trm"]
+
+        # Los dividendos históricos también son entradas de efectivo del
+        # portafolio. Se calculan una sola vez por evento y se convierten con
+        # la TRM histórica individual ya guardada en el detalle del dividendo.
+        # En esta fuente, la fecha disponible del evento es la fecha ex-dividendo.
+        for categoria, nombre in self._activos_registrados():
+            if categoria != CATEGORIA_RV:
+                continue
+            _, detalle = self.calcular_dividendos_activo(nombre, fecha_hasta=limite)
+            saldo += sum(d["total_cop"] for d in detalle)
+
         return saldo
 
     def obtener_saldo_gastado(self):
@@ -602,37 +623,61 @@ class GestorDatos:
         return total
 
     def obtener_ganancias(self):
-        """Ganancias realizadas (ventas cerradas) en COP, netas de comisiones."""
-        return sum(v["ganancia_perdida"] for v in self.calcular_ventas_cerradas())
+        """Resultado realizado en COP: ventas cerradas más dividendos históricos."""
+        ventas = sum(v["ganancia_perdida"] for v in self.calcular_ventas_cerradas())
+        dividendos = 0.0
+        for categoria, nombre in self._activos_registrados():
+            if categoria == CATEGORIA_RV:
+                _, detalle = self.calcular_dividendos_activo(nombre)
+                dividendos += sum(d["total_cop"] for d in detalle)
+        return ventas + dividendos
 
     # ======================================================================
     # Dividendos
     # ======================================================================
-    def calcular_dividendos_activo(self, nombre):
+    def calcular_dividendos_activo(self, nombre, fecha_hasta=None):
         """
-        Dividendos recibidos (USD) por una acción: para cada fecha ex-dividendo se
-        multiplican las acciones que se tenían el día anterior por el dividendo.
-        Devuelve (total_usd, detalle).
+        Calcula cada dividendo histórico por separado.
+
+        El derecho al dividendo se determina con las acciones mantenidas antes
+        de la fecha ex-dividendo. Cada evento se convierte a COP con la TRM
+        histórica de su propia fecha (o el último dato anterior disponible).
+        Devuelve (total_usd, detalle), conservando compatibilidad con llamadas
+        anteriores y añadiendo total_cop/trm/fecha_trm a cada detalle.
         """
         ops = [o for o in list(self.historial_operaciones)
                if o["categoria"] == CATEGORIA_RV and o["activo"] == nombre]
         if not ops:
             return 0.0, []
         hoy = date.today()
-        total = 0.0
+        limite = self.parsear_fecha(fecha_hasta) if fecha_hasta is not None else hoy
+        total_usd = 0.0
         detalle = []
         for fecha_ex, monto in self.obtener_dividendos_historicos(nombre):
-            if fecha_ex > hoy:
+            if fecha_ex > limite:
                 continue
             cantidad = 0.0
             for o in ops:
+                # La compra en fecha ex no tiene derecho; la venta en fecha ex
+                # conserva el derecho adquirido antes de abrir el mercado.
                 if o["fecha"] < fecha_ex:
                     cantidad += o["cantidad"] if o["tipo"] == "Compra" else -o["cantidad"]
             if cantidad > EPS:
-                total += cantidad * monto
-                detalle.append({"fecha": fecha_ex, "cantidad": cantidad,
-                                "por_accion": monto, "total_usd": cantidad * monto})
-        return total, detalle
+                total_evento_usd = cantidad * monto
+                trm_evento, fecha_trm = self.obtener_trm_fecha(fecha_ex)
+                total_evento_cop = total_evento_usd * trm_evento
+                total_usd += total_evento_usd
+                detalle.append({
+                    "fecha": fecha_ex,
+                    "cantidad": cantidad,
+                    "por_accion": monto,
+                    "total_usd": total_evento_usd,
+                    "trm": trm_evento,
+                    "fecha_trm": fecha_trm,
+                    "total_cop": total_evento_cop,
+                    "trm_es_historica": fecha_trm is not None,
+                })
+        return total_usd, detalle
 
     # ======================================================================
     # Posiciones abiertas
@@ -669,6 +714,7 @@ class GestorDatos:
         valor_actual = cantidad * precio_actual * trm_actual
         resultado = valor_actual - costo_cop
         dividendos_usd, detalle_div = self.calcular_dividendos_activo(nombre)
+        dividendos_cop = sum(d["total_cop"] for d in detalle_div)
         rend_pct, div_anual = self.obtener_resumen_dividendo(nombre)
 
         return {
@@ -684,7 +730,7 @@ class GestorDatos:
             "resultado_cop": resultado,
             "rentabilidad_pct": (resultado / costo_cop * 100) if costo_cop > 0 else 0.0,
             "variacion": ((precio_actual - promedio) / promedio * 100) if promedio > 0 else 0.0,
-            "dividendos_cop": dividendos_usd * trm_actual,
+            "dividendos_cop": dividendos_cop,
             "dividendos_usd": dividendos_usd,
             "detalle_dividendos": detalle_div,
             "rend_div_pct": rend_pct,
@@ -798,7 +844,10 @@ class GestorDatos:
 
         trm = self.obtener_trm() if any(o["categoria"] == CATEGORIA_RV for o in ops) else 1.0
         nombres_rv = [n for c, n in self._activos_registrados() if c == CATEGORIA_RV]
-        dividendos_cop = sum(self.calcular_dividendos_activo(n)[0] for n in nombres_rv) * trm
+        dividendos_cop = sum(
+            sum(d["total_cop"] for d in self.calcular_dividendos_activo(n)[1])
+            for n in nombres_rv
+        )
         ingresos_rf_cop = sum(o["valor_total_cop"] for o in ops if o["tipo"] == "Ingreso RF")
 
         total_invertido = sum(p["costo_cop"] for p in posiciones)
@@ -808,9 +857,11 @@ class GestorDatos:
         intereses = sum(p["interes_cop"] for p in posiciones if p["categoria"] == CATEGORIA_RF)
 
         ganancia_no_realizada = valor_actual - total_invertido
-        ganancia_realizada = sum(v["ganancia_perdida"] for v in ventas)
-        resultado_total = (ganancia_no_realizada + ganancia_realizada +
-                           dividendos_cop + ingresos_rf_cop)
+        ganancia_ventas = sum(v["ganancia_perdida"] for v in ventas)
+        # Los dividendos son rendimiento realizado y forman parte del efectivo.
+        # Se incorporan aquí una sola vez (no volver a sumarlos en resultado_total).
+        ganancia_realizada = ganancia_ventas + dividendos_cop
+        resultado_total = ganancia_no_realizada + ganancia_realizada + ingresos_rf_cop
 
         total_comprado = sum(
             (o["cantidad"] * o["precio_unitario"] + o["comision"]) * o["trm"]
@@ -835,9 +886,8 @@ class GestorDatos:
         for nombre in nombres_rv:
             _, detalle = self.calcular_dividendos_activo(nombre)
             for dividendo in detalle:
-                # Yahoo entrega el evento histórico de dividendo; se usa su fecha
-                # reportada y la TRM vigente para expresar el flujo en COP.
-                flujos.append((dividendo["fecha"], dividendo["total_usd"] * trm))
+                # Cada flujo usa la TRM histórica individual del evento.
+                flujos.append((dividendo["fecha"], dividendo["total_cop"]))
         if valor_actual > 0:
             flujos.append((hoy, valor_actual))
         tir = self._calcular_xirr(flujos)
@@ -860,12 +910,13 @@ class GestorDatos:
             "intereses_cop": intereses,
             "ganancia_no_realizada": ganancia_no_realizada,
             "ganancia_realizada": ganancia_realizada,
+            "ganancia_ventas": ganancia_ventas,
             "resultado_total": resultado_total,
             "rentabilidad_acumulada": rent_acum,
             "rentabilidad_ea": rent_ea,
             "ea_referencial": dias < 30,
             "dias": dias,
             "saldo": saldo,
-            "patrimonio": saldo + valor_actual + dividendos_cop,
+            "patrimonio": saldo + valor_actual,
             "fecha_calculo": datetime.now(),
         }
