@@ -1023,6 +1023,15 @@ class TableroInverGest:
             self._linea("Dividendos cobrados:", fmt_cop(p["dividendos_cop"]))
             self._linea("Rend. dividendo:", f"{p['rend_div_pct']:.2f}% anual "
                                             f"(${p['div_anual_accion']:.2f}/acc)")
+            # Desglose auditable: monto por acción, cantidad elegible, TRM y COP.
+            for div in p.get("detalle_dividendos", []):
+                fecha_txt = div["fecha"].strftime("%d/%m/%Y")
+                fecha_trm_txt = (div["fecha_trm"].strftime("%d/%m/%Y")
+                                 if div.get("fecha_trm") else "respaldo sin fecha histórica")
+                self._linea("  Div. " + fecha_txt + ":",
+                            f"{div['cantidad']:g} x ${div['por_accion']:.4f} USD")
+                self._linea("  TRM " + fecha_trm_txt + ":",
+                            f"${div['trm']:,.2f} -> {fmt_cop(div['total_cop'])}")
             self._t("-" * 38 + "\n\n", "gris")
 
     def _mostrar_renta_fija_texto(self, posiciones):
