@@ -13,7 +13,7 @@ except ImportError:  # Permite abrir el proyecto y probar la lógica sin conexi�
 # --------------------------------------------------------------------------
 # Constantes
 # --------------------------------------------------------------------------
-SALDO_INICIAL = 50_000_000          # COP
+SALDO_INICIAL = 100_000_000          # COP
 TRM_RESPALDO = 4000.0               # Se usa solo si no hay conexión
 CATEGORIA_RV = "Renta Variable"
 CATEGORIA_RF = "Renta Fija"
@@ -315,12 +315,22 @@ class GestorDatos:
         if categoria == CATEGORIA_RV:
             if nombre not in self.empresas:
                 return False, "Empresa no reconocida"
-            if precio is None or not math.isfinite(float(precio)) or precio <= 0:
+            if precio is None:
+                # Si el usuario no indicó precio, usar el cierre histórico de la fecha.
+                try:
+                    precio, fecha_cierre_auto = self.obtener_precio_cierre(nombre, fecha)
+                    if fecha_precio is None:
+                        fecha_precio = fecha_cierre_auto
+                except Exception as exc:
+                    return False, f"No se pudo obtener el cierre histórico y no ingresaste un precio manual: {exc}"
+            if not math.isfinite(float(precio)) or precio <= 0:
                 return False, "El precio debe ser un número finito mayor que cero"
             subtipo = "Acción"
             tasa, vencimiento = None, None
             if trm is None:
-                trm = self.obtener_trm()
+                trm, fecha_trm_auto = self.obtener_trm_fecha(fecha)
+                if fecha_trm is None:
+                    fecha_trm = fecha_trm_auto
             if not math.isfinite(float(trm)) or trm <= 0:
                 return False, "La TRM debe ser un número finito mayor que cero"
         else:
